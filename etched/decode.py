@@ -40,7 +40,7 @@ def _load_vae(device: torch.device) -> AutoencoderKLMochi:
 def run_decode(artifacts: DenoiseArtifacts, output_path: Path) -> None:
     print("=== DECODE: VAE decoding & video export ===")
     device = pick_device()
-    latents = artifacts.denoised_latents.to(device=device, dtype=PIPELINE_DTYPE)
+    latents = artifacts.denoised_latents.unsqueeze(0).to(device=device, dtype=PIPELINE_DTYPE)
 
     vae = _load_vae(device)
     video_processor = VideoProcessor(vae_scale_factor=VAE_SPATIAL_SCALE_FACTOR)
@@ -62,7 +62,10 @@ def run_decode(artifacts: DenoiseArtifacts, output_path: Path) -> None:
     with torch.no_grad(), autocast_context:
         video = vae.decode(latents, return_dict=False)[0]
 
-    frames = video_processor.postprocess_video(video, output_type="pil")[0]
+    frames_list = video_processor.postprocess_video(video, output_type="pil")
+    if len(frames_list) != 1:
+        raise ValueError(f"Expected a single decoded video, but received {len(frames_list)} items.")
+    frames = frames_list[0]
     output_path = Path(output_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     export_to_video(frames, str(output_path), fps=artifacts.settings.fps)

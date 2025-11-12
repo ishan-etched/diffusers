@@ -63,7 +63,7 @@ def run_denoise(artifacts: EncodeArtifacts) -> DenoiseArtifacts:
         if artifacts.negative_prompt_attention_mask is not None
         else None
     )
-    latents = artifacts.latents.to(device=device, dtype=PIPELINE_DTYPE)
+    latents = artifacts.latents.unsqueeze(0).to(device=device, dtype=PIPELINE_DTYPE)
 
     result = pipe(
         prompt=None,
@@ -77,18 +77,20 @@ def run_denoise(artifacts: EncodeArtifacts) -> DenoiseArtifacts:
         num_frames=artifacts.settings.num_frames,
         num_inference_steps=artifacts.settings.num_inference_steps,
         guidance_scale=artifacts.settings.guidance_scale,
-        num_videos_per_prompt=1,
         generator=None,
         latents=latents,
-        attention_kwargs=artifacts.attention_kwargs,
         output_type="latent",
     )
 
     latents = result.frames
     if isinstance(latents, list):
+        if len(latents) != 1:
+            raise ValueError(f"Expected a single latent tensor, but received {len(latents)} items.")
         latents = latents[0]
+    if latents.shape[0] != 1:
+        raise ValueError(f"Expected batch size 1 latents, but received shape {tuple(latents.shape)}")
 
-    denoised = latents.to("cpu", dtype=PIPELINE_DTYPE)
+    denoised = latents.squeeze(0).to("cpu", dtype=PIPELINE_DTYPE)
 
     pipe = None  # free hooks
     if torch.cuda.is_available():

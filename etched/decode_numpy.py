@@ -26,9 +26,8 @@ except ImportError:  # pragma: no cover
         load_denoise_npz,
     )
 
+Array4D = Float[Array, "channels frames height width"]
 Array5D = Float[Array, "batch channels frames height width"]
-
-
 @dataclass(frozen=True)
 class Conv3DParams:
     weight: Array  # (out_channels, in_channels, kt, kh, kw)
@@ -243,18 +242,25 @@ def decoder_forward(latents: Array5D, params: DecoderParams) -> Array5D:
     return jnp.transpose(x, (0, 4, 1, 2, 3))
 
 
-def _video_to_pil_frames(video: Array5D) -> List[Image.Image]:
+def _decode_single_video(latents: Array4D, params: DecoderParams) -> Array4D:
+    latents_batched = latents[None, ...]
+    latents_batched = latents_batched * params.latents_std / params.scaling_factor + params.latents_mean
+    video = decoder_forward(latents_batched, params)
+    if video.shape[0] != 1:
+        raise ValueError(f"Expected a single decoded sample, but decoder returned shape {tuple(video.shape)}")
+    return video[0]
+
+
+def _video_to_pil_frames(video: Array4D) -> List[Image.Image]:
     np_video = np.array(video)
     np_video = np.clip(np_video, -1.0, 1.0)
     np_video = (np_video + 1.0) / 2.0
     np_video = (np_video * 255).round().astype(np.uint8)
 
     frames: List[Image.Image] = []
-    batch, _, num_frames, _, _ = np_video.shape
-    assert batch == 1, "Only batch size 1 is supported in numpy decoder."
-
+    _, num_frames, _, _ = np_video.shape
     for frame_idx in range(num_frames):
-        frame = np_video[0, :, frame_idx]
+        frame = np_video[:, frame_idx]
         frame = np.transpose(frame, (1, 2, 0))
         frames.append(Image.fromarray(frame))
     return frames
@@ -273,9 +279,9 @@ def run_decode_numpy(
     params = load_decoder_params(weights_path)
 
     latents = jnp.asarray(payload.latents)
-    latents = latents * params.latents_std / params.scaling_factor + params.latents_mean
-
-    video = decoder_forward(latents, params)
+    if latents.ndim != 4:
+        raise ValueError(f"Expected stored latents to have shape (channels, frames, height, width), got {latents.shape}")
+    video = _decode_single_video(latents, params)
     frames = _video_to_pil_frames(video)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     export_to_video(frames, str(out_path), fps=payload.settings.fps)

@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import torch
 from diffusers.utils.torch_utils import randn_tensor
@@ -9,7 +9,6 @@ try:  # pragma: no cover - allow running as a script
         DEFAULT_HEIGHT,
         DEFAULT_WIDTH,
         MODEL_ID,
-        NUM_VIDEOS_PER_PROMPT,
         PIPELINE_DTYPE,
         TOKENIZER_MAX_LENGTH,
         VAE_SPATIAL_SCALE_FACTOR,
@@ -23,7 +22,6 @@ except ImportError:  # pragma: no cover
         DEFAULT_HEIGHT,
         DEFAULT_WIDTH,
         MODEL_ID,
-        NUM_VIDEOS_PER_PROMPT,
         PIPELINE_DTYPE,
         TOKENIZER_MAX_LENGTH,
         VAE_SPATIAL_SCALE_FACTOR,
@@ -57,15 +55,13 @@ def _build_generator(seed: int, device: torch.device) -> torch.Generator:
 def _get_t5_prompt_embeds(
     tokenizer: T5TokenizerFast,
     text_encoder: T5EncoderModel,
-    prompts: Union[str, Tuple[str, ...]],
-    num_videos_per_prompt: int,
+    prompt: str,
     max_sequence_length: int,
     device: torch.device,
     dtype: torch.dtype,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    prompts = [prompts] if isinstance(prompts, str) else list(prompts)
     tokenized = tokenizer(
-        prompts,
+        [prompt],
         padding="max_length",
         max_length=max_sequence_length,
         truncation=True,
@@ -80,13 +76,6 @@ def _get_t5_prompt_embeds(
         prompt_embeds = text_encoder(input_ids, attention_mask=attention_mask)[0]
     prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
 
-    _, seq_len, _ = prompt_embeds.shape
-    prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
-    prompt_embeds = prompt_embeds.view(len(prompts) * num_videos_per_prompt, seq_len, -1)
-
-    attention_mask = attention_mask.view(len(prompts), -1)
-    attention_mask = attention_mask.repeat(num_videos_per_prompt, 1)
-
     return prompt_embeds, attention_mask
 
 
@@ -95,7 +84,6 @@ def _encode_prompts(
     text_encoder: T5EncoderModel,
     prompt: str,
     negative_prompt: Optional[str],
-    num_videos_per_prompt: int,
     max_sequence_length: int,
     device: torch.device,
     dtype: torch.dtype,
@@ -104,8 +92,7 @@ def _encode_prompts(
     prompt_embeds, prompt_attention_mask = _get_t5_prompt_embeds(
         tokenizer=tokenizer,
         text_encoder=text_encoder,
-        prompts=prompt,
-        num_videos_per_prompt=num_videos_per_prompt,
+        prompt=prompt,
         max_sequence_length=max_sequence_length,
         device=device,
         dtype=dtype,
@@ -118,8 +105,7 @@ def _encode_prompts(
         negative_prompt_embeds, negative_prompt_attention_mask = _get_t5_prompt_embeds(
             tokenizer=tokenizer,
             text_encoder=text_encoder,
-            prompts=negative_prompt,
-            num_videos_per_prompt=num_videos_per_prompt,
+            prompt=negative_prompt,
             max_sequence_length=max_sequence_length,
             device=device,
             dtype=dtype,
@@ -134,7 +120,6 @@ def _encode_prompts(
 
 
 def _prepare_latents(
-    batch_size: int,
     num_channels_latents: int,
     height: int,
     width: int,
@@ -146,7 +131,7 @@ def _prepare_latents(
     height = height // VAE_SPATIAL_SCALE_FACTOR
     width = width // VAE_SPATIAL_SCALE_FACTOR
     num_frames = (num_frames - 1) // VAE_TEMPORAL_SCALE_FACTOR + 1
-    shape = (batch_size, num_channels_latents, num_frames, height, width)
+    shape = (num_channels_latents, num_frames, height, width)
 
     latents = randn_tensor(shape, generator=generator, device=device, dtype=torch.float32)
     return latents.to(dtype=dtype)
@@ -184,7 +169,6 @@ def run_encode() -> EncodeArtifacts:
         text_encoder=text_encoder,
         prompt=settings.prompt,
         negative_prompt=settings.negative_prompt,
-        num_videos_per_prompt=NUM_VIDEOS_PER_PROMPT,
         max_sequence_length=TOKENIZER_MAX_LENGTH,
         device=device,
         dtype=PIPELINE_DTYPE,
@@ -197,7 +181,6 @@ def run_encode() -> EncodeArtifacts:
 
     generator = _build_generator(settings.seed, device)
     latents = _prepare_latents(
-        batch_size=NUM_VIDEOS_PER_PROMPT,
         num_channels_latents=12,
         height=settings.height,
         width=settings.width,
@@ -216,8 +199,6 @@ def run_encode() -> EncodeArtifacts:
             negative_prompt_attention_mask.to("cpu") if negative_prompt_attention_mask is not None else None
         ),
         latents=latents.to("cpu"),
-        num_videos_per_prompt=NUM_VIDEOS_PER_PROMPT,
-        attention_kwargs=None,
     )
 
     del tokenizer

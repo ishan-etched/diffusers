@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import numpy as np
 import torch
@@ -13,7 +13,6 @@ DEFAULT_WIDTH = 848
 VAE_SPATIAL_SCALE_FACTOR = 8
 VAE_TEMPORAL_SCALE_FACTOR = 6
 TOKENIZER_MAX_LENGTH = 256
-NUM_VIDEOS_PER_PROMPT = 1
 SNAPSHOT_DIR = Path("artifacts")
 DEFAULT_ENCODE_SNAPSHOT = SNAPSHOT_DIR / "encode_artifacts.pt"
 DEFAULT_DENOISE_SNAPSHOT = SNAPSHOT_DIR / "denoise_artifacts.pt"
@@ -42,8 +41,6 @@ class EncodeArtifacts:
     negative_prompt_embeds: Optional[torch.Tensor]
     negative_prompt_attention_mask: Optional[torch.Tensor]
     latents: torch.Tensor
-    num_videos_per_prompt: int
-    attention_kwargs: Optional[Dict[str, Any]]
 
 
 @dataclass(frozen=True)
