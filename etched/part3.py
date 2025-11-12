@@ -46,15 +46,12 @@ def part3_decode_and_render(inputs: Part1Artifacts, outputs: Part2Artifacts) -> 
     vae = _load_vae(device)
     video_processor = VideoProcessor(vae_scale_factor=VAE_SPATIAL_SCALE_FACTOR)
 
-    has_latents_mean = hasattr(vae.config, "latents_mean") and vae.config.latents_mean is not None
-    has_latents_std = hasattr(vae.config, "latents_std") and vae.config.latents_std is not None
+    assert hasattr(vae.config, "latents_mean") and vae.config.latents_mean is not None
+    assert hasattr(vae.config, "latents_std") and vae.config.latents_std is not None
 
-    if has_latents_mean and has_latents_std:
-        latents_mean = torch.tensor(vae.config.latents_mean).view(1, 12, 1, 1, 1).to(latents.device, latents.dtype)
-        latents_std = torch.tensor(vae.config.latents_std).view(1, 12, 1, 1, 1).to(latents.device, latents.dtype)
-        latents = latents * latents_std / vae.config.scaling_factor + latents_mean
-    else:
-        latents = latents / vae.config.scaling_factor
+    latents_mean = torch.tensor(vae.config.latents_mean).view(1, 12, 1, 1, 1).to(latents.device, latents.dtype)
+    latents_std = torch.tensor(vae.config.latents_std).view(1, 12, 1, 1, 1).to(latents.device, latents.dtype)
+    latents = latents * latents_std / vae.config.scaling_factor + latents_mean
 
     device_type = device.type
     autocast_context = (
