@@ -4,11 +4,13 @@ from pathlib import Path
 
 try:  # pragma: no cover - allow running as a script
     from .decode import run_decode
+    from .decode_numpy import run_decode_numpy
     from .denoise import run_denoise
     from .encode import run_encode
     from .utils import (
         DEFAULT_DENOISE_SNAPSHOT,
         DEFAULT_ENCODE_SNAPSHOT,
+        DEFAULT_VAE_WEIGHTS,
         load_denoise_snapshot,
         load_encode_snapshot,
         save_denoise_snapshot,
@@ -16,11 +18,13 @@ try:  # pragma: no cover - allow running as a script
     )
 except ImportError:  # pragma: no cover
     from decode import run_decode  # type: ignore
+    from decode_numpy import run_decode_numpy  # type: ignore
     from denoise import run_denoise  # type: ignore
     from encode import run_encode  # type: ignore
     from utils import (  # type: ignore
         DEFAULT_DENOISE_SNAPSHOT,
         DEFAULT_ENCODE_SNAPSHOT,
+        DEFAULT_VAE_WEIGHTS,
         load_denoise_snapshot,
         load_encode_snapshot,
         save_denoise_snapshot,
@@ -57,19 +61,31 @@ def run_denoise_command(encode_snapshot: Path, denoise_snapshot: Path) -> None:
     print(f"Saved denoise snapshot to {path}")
 
 
-def run_decode_command(denoise_snapshot: Path, video_path: Path) -> None:
+def run_decode_torch(denoise_snapshot: Path, video_path: Path) -> None:
     denoise_artifacts = load_denoise_snapshot(denoise_snapshot)
     run_decode(denoise_artifacts, video_path)
 
 
-def run_all(encode_snapshot: Path, denoise_snapshot: Path, video_path: Path) -> None:
+def run_decode_numpy_backend(denoise_snapshot: Path, video_path: Path, vae_weights: Path) -> None:
+    npz_path = denoise_snapshot.with_suffix(".npz")
+    if not npz_path.exists():
+        raise FileNotFoundError(f"Expected numpy snapshot at {npz_path}.")
+    if not Path(vae_weights).exists():
+        raise FileNotFoundError(f"Decoder weight archive not found at {vae_weights}.")
+    run_decode_numpy(npz_path, vae_weights, video_path)
+
+
+def run_all(encode_snapshot: Path, denoise_snapshot: Path, video_path: Path, backend: str, vae_weights: Path) -> None:
     encode_artifacts = run_encode()
     save_encode_snapshot(encode_artifacts, encode_snapshot)
 
     denoise_artifacts = run_denoise(encode_artifacts)
     save_denoise_snapshot(denoise_artifacts, denoise_snapshot)
 
-    run_decode(denoise_artifacts, video_path)
+    if backend == "numpy":
+        run_decode_numpy_backend(denoise_snapshot, video_path, vae_weights)
+    else:
+        run_decode(denoise_artifacts, video_path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +95,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=_as_path,
         default=Path("artifacts"),
         help="Directory for snapshots and final video (default: artifacts/).",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("torch", "numpy"),
+        default="torch",
+        help="Decoding backend to use (default: torch).",
+    )
+    parser.add_argument(
+        "--vae-weights",
+        type=_as_path,
+        default=None,
+        help="Path to the numpy decoder weights archive (required for numpy backend).",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -95,7 +123,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     command = args.command or "all"
 
-    _, encode_snapshot, denoise_snapshot, video_path = _resolve_paths(args.dir)
+    base_dir, encode_snapshot, denoise_snapshot, video_path = _resolve_paths(args.dir)
+    vae_weights = Path(args.vae_weights) if args.vae_weights is not None else base_dir / DEFAULT_VAE_WEIGHTS.name
 
     try:
         if command == "encode":
@@ -103,9 +132,12 @@ def main(argv: list[str] | None = None) -> None:
         elif command == "denoise":
             run_denoise_command(encode_snapshot, denoise_snapshot)
         elif command == "decode":
-            run_decode_command(denoise_snapshot, video_path)
+            if args.backend == "numpy":
+                run_decode_numpy_backend(denoise_snapshot, video_path, vae_weights)
+            else:
+                run_decode_torch(denoise_snapshot, video_path)
         elif command == "all":
-            run_all(encode_snapshot, denoise_snapshot, video_path)
+            run_all(encode_snapshot, denoise_snapshot, video_path, args.backend, vae_weights)
         else:
             parser.error(f"Unknown command: {command}")
     except KeyboardInterrupt:  # pragma: no cover
