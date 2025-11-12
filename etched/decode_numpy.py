@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from diffusers.utils.export_utils import export_to_video
+from einops import rearrange
 from jaxtyping import Array, Float
 from PIL import Image
 
@@ -27,7 +28,25 @@ except ImportError:  # pragma: no cover
     )
 
 Array4D = Float[Array, "channels frames height width"]
-Array5D = Float[Array, "batch channels frames height width"]
+Array5DChannelsFirst = Float[Array, "batch channels frames height width"]
+Array5DChannelsLast = Float[Array, "batch frames height width channels"]
+
+
+def _channels_first_to_last(x: Array5DChannelsFirst) -> Array5DChannelsLast:
+    """Move channels to the last axis: (B, C, T, H, W) -> (B, T, H, W, C)."""
+    return rearrange(x, "b c t h w -> b t h w c")
+
+
+def _channels_last_to_first(x: Array5DChannelsLast) -> Array5DChannelsFirst:
+    """Move channels back to axis=1: (B, T, H, W, C) -> (B, C, T, H, W)."""
+    return rearrange(x, "b t h w c -> b c t h w")
+
+
+def _conv_kernel_to_lax_format(weight: Array) -> Array:
+    """Convert weights to (kt, kh, kw, in_c, out_c) for lax.conv."""
+    return rearrange(weight, "out_c in_c kt kh kw -> kt kh kw in_c out_c")
+
+
 @dataclass(frozen=True)
 class Conv3DParams:
     weight: Array  # (out_channels, in_channels, kt, kh, kw)
@@ -148,50 +167,58 @@ def load_decoder_params(path: Path) -> DecoderParams:
     )
 
 
-def _replicate_pad(x: Array5D, kernel_size: Tuple[int, int, int]) -> Array5D:
+def _replicate_pad(x: Array5DChannelsLast, kernel_size: Tuple[int, int, int]) -> Array5DChannelsLast:
     kt, kh, kw = kernel_size
     if kt == kh == kw == 1:
         return x
     pad_t = kt - 1
     pad_h = (kh - 1) // 2
     pad_w = (kw - 1) // 2
-    pad_config = ((0, 0), (0, 0), (pad_t, 0), (pad_h, pad_h), (pad_w, pad_w))
+    pad_config = ((0, 0), (pad_t, 0), (pad_h, pad_h), (pad_w, pad_w), (0, 0))
     return jnp.pad(x, pad_config, mode="edge")
 
 
-def _conv3d(x: Array5D, params: Conv3DParams) -> Array5D:
+def _conv3d(x: Array5DChannelsLast, params: Conv3DParams) -> Array5DChannelsLast:
     x = _replicate_pad(x, params.kernel_size)
-    kernel = jnp.transpose(params.weight, (2, 3, 4, 1, 0))
-    x_t = jnp.transpose(x, (0, 2, 3, 4, 1))
+    kernel = _conv_kernel_to_lax_format(params.weight)
     strides = params.stride
     y = jax.lax.conv_general_dilated(
-        x_t,
+        x,
         kernel,
         window_strides=strides,
         padding="VALID",
         dimension_numbers=("NTHWC", "THWIO", "NTHWC"),
     )
-    y = jnp.transpose(y, (0, 4, 1, 2, 3))
     if params.bias is not None:
-        y = y + params.bias.reshape(1, -1, 1, 1, 1)
+        y = y + params.bias.reshape(1, 1, 1, 1, -1)
     return y
 
 
-def _group_norm(x: Array5D, weight: Array, bias: Array, groups: int = 32, eps: float = 1e-5) -> Array5D:
-    b, c, t, h, w = x.shape
-    x_group = x.reshape(b, groups, c // groups, t, h, w)
+def _group_norm(
+    x: Array5DChannelsLast,
+    weight: Array,
+    bias: Array,
+    groups: int = 32,
+    eps: float = 1e-5,
+) -> Array5DChannelsLast:
+    b, t, h, w, c = x.shape
+    if c % groups != 0:
+        raise ValueError(f"Channel count {c} must be divisible by number of groups {groups}.")
+    x_group = rearrange(x, "b t h w (g c_per) -> b g c_per t h w", g=groups)
     mean = jnp.mean(x_group, axis=(2, 3, 4, 5), keepdims=True)
     var = jnp.var(x_group, axis=(2, 3, 4, 5), keepdims=True)
     x_group = (x_group - mean) / jnp.sqrt(var + eps)
-    normalized = x_group.reshape(b, c, t, h, w)
-    return normalized * weight.reshape(1, -1, 1, 1, 1) + bias.reshape(1, -1, 1, 1, 1)
+    normalized = rearrange(x_group, "b g c_per t h w -> b t h w (g c_per)")
+    scale = weight.reshape(1, 1, 1, 1, -1)
+    shift = bias.reshape(1, 1, 1, 1, -1)
+    return normalized * scale + shift
 
 
 def _swish(x: Array) -> Array:
     return x * jax.nn.sigmoid(x)
 
 
-def _resnet_block(x: Array5D, params: ResnetParams) -> Array5D:
+def _resnet_block(x: Array5DChannelsLast, params: ResnetParams) -> Array5DChannelsLast:
     hidden = _group_norm(x, params.norm1_weight, params.norm1_bias)
     hidden = _swish(hidden)
     hidden = _conv3d(hidden, params.conv1)
@@ -202,44 +229,54 @@ def _resnet_block(x: Array5D, params: ResnetParams) -> Array5D:
     return hidden + x
 
 
-def _mid_block(x: Array5D, resnets: Iterable[ResnetParams]) -> Array5D:
+def _mid_block(x: Array5DChannelsLast, resnets: Iterable[ResnetParams]) -> Array5DChannelsLast:
     for res in resnets:
         x = _resnet_block(x, res)
     return x
 
 
-def _linear(x: Array, params: LinearParams) -> Array:
+def _linear(x: Array5DChannelsLast, params: LinearParams) -> Array5DChannelsLast:
     y = jnp.tensordot(x, jnp.transpose(params.weight), axes=1)
     return y + params.bias
 
 
-def _upsample_volume(x: Array5D, t_expansion: int, s_expansion: int) -> Array5D:
-    b, c, t, h, w = x.shape
+def _upsample_volume(x: Array5DChannelsLast, t_expansion: int, s_expansion: int) -> Array5DChannelsLast:
+    b, t, h, w, c = x.shape
     factor = t_expansion * s_expansion * s_expansion
+    if c % factor != 0:
+        raise ValueError(
+            f"Channel count {c} must be divisible by expansion factor {factor} "
+            "for pixel-shuffle upsampling."
+        )
     out_channels = c // factor
-    x = x.reshape(b, out_channels, t_expansion, s_expansion, s_expansion, t, h, w)
-    x = jnp.transpose(x, (0, 1, 5, 2, 6, 3, 7, 4))
-    return x.reshape(b, out_channels, t * t_expansion, h * s_expansion, w * s_expansion)
+    # 3D pixel-shuffle: channel groups become strides along (t, h, w).
+    return rearrange(
+        x,
+        "b t h w (c t_fac h_fac w_fac) -> b (t t_fac) (h h_fac) (w w_fac) c",
+        c=out_channels,
+        t_fac=t_expansion,
+        h_fac=s_expansion,
+        w_fac=s_expansion,
+    )
 
 
-def _up_block(x: Array5D, params: UpBlockParams) -> Array5D:
+def _up_block(x: Array5DChannelsLast, params: UpBlockParams) -> Array5DChannelsLast:
     x = _mid_block(x, params.resnets)
-    x = jnp.transpose(x, (0, 2, 3, 4, 1))
     x = _linear(x, params.proj)
-    x = jnp.transpose(x, (0, 4, 1, 2, 3))
     return _upsample_volume(x, params.temporal_expansion, params.spatial_expansion)
 
 
-def decoder_forward(latents: Array5D, params: DecoderParams) -> Array5D:
-    x = _conv3d(latents, params.conv_in)
+def decoder_forward(latents: Array5DChannelsFirst, params: DecoderParams) -> Array5DChannelsFirst:
+    # Operate on channels-last internally to match JAX conv expectations.
+    x = _channels_first_to_last(latents)
+    x = _conv3d(x, params.conv_in)
     x = _mid_block(x, params.block_in)
     for block in params.up_blocks:
         x = _up_block(x, block)
     x = _mid_block(x, params.block_out)
     x = _swish(x)
-    x = jnp.transpose(x, (0, 2, 3, 4, 1))
     x = _linear(x, params.proj_out)
-    return jnp.transpose(x, (0, 4, 1, 2, 3))
+    return _channels_last_to_first(x)
 
 
 def _decode_single_video(latents: Array4D, params: DecoderParams) -> Array4D:
@@ -260,8 +297,7 @@ def _video_to_pil_frames(video: Array4D) -> List[Image.Image]:
     frames: List[Image.Image] = []
     _, num_frames, _, _ = np_video.shape
     for frame_idx in range(num_frames):
-        frame = np_video[:, frame_idx]
-        frame = np.transpose(frame, (1, 2, 0))
+        frame = rearrange(np_video[:, frame_idx], "c h w -> h w c")
         frames.append(Image.fromarray(frame))
     return frames
 
