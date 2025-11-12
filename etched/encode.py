@@ -14,8 +14,8 @@ try:  # pragma: no cover - allow running as a script
         TOKENIZER_MAX_LENGTH,
         VAE_SPATIAL_SCALE_FACTOR,
         VAE_TEMPORAL_SCALE_FACTOR,
+        EncodeArtifacts,
         GenerationSettings,
-        Part1Artifacts,
         pick_device,
     )
 except ImportError:  # pragma: no cover
@@ -28,8 +28,8 @@ except ImportError:  # pragma: no cover
         TOKENIZER_MAX_LENGTH,
         VAE_SPATIAL_SCALE_FACTOR,
         VAE_TEMPORAL_SCALE_FACTOR,
+        EncodeArtifacts,
         GenerationSettings,
-        Part1Artifacts,
         pick_device,
     )
 
@@ -152,8 +152,8 @@ def _prepare_latents(
     return latents.to(dtype=dtype)
 
 
-def part1_prepare_inputs() -> Part1Artifacts:
-    print("=== PART 1: Prompt encoding & latent sampling ===")
+def run_encode() -> EncodeArtifacts:
+    print("=== ENCODE: Prompt encoding & latent sampling ===")
     settings = GenerationSettings(
         prompt="Campfire burning on a beach, Ultra high resolution 4k.",
         negative_prompt=None,
@@ -164,7 +164,6 @@ def part1_prepare_inputs() -> Part1Artifacts:
         guidance_scale=4.5,
         fps=30,
         seed=30,
-        output_path="output_video.mp4",
     )
 
     _ensure_size_is_valid(settings.height, settings.width)
@@ -208,7 +207,7 @@ def part1_prepare_inputs() -> Part1Artifacts:
         generator=generator,
     )
 
-    artifacts = Part1Artifacts(
+    artifacts = EncodeArtifacts(
         settings=settings,
         prompt_embeds=prompt_embeds.to("cpu"),
         prompt_attention_mask=prompt_attention_mask.to("cpu") if prompt_attention_mask is not None else None,

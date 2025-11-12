@@ -7,8 +7,8 @@ try:  # pragma: no cover - allow running as a script
         MODEL_ID,
         PIPELINE_DTYPE,
         PIPELINE_VARIANT,
-        Part1Artifacts,
-        Part2Artifacts,
+        DenoiseArtifacts,
+        EncodeArtifacts,
         pick_device,
     )
 except ImportError:  # pragma: no cover
@@ -16,8 +16,8 @@ except ImportError:  # pragma: no cover
         MODEL_ID,
         PIPELINE_DTYPE,
         PIPELINE_VARIANT,
-        Part1Artifacts,
-        Part2Artifacts,
+        DenoiseArtifacts,
+        EncodeArtifacts,
         pick_device,
     )
 
@@ -27,8 +27,8 @@ def _get_pipeline_execution_device(pipe: MochiPipeline) -> torch.device:
     return device if device is not None else pick_device()
 
 
-def part2_run_transformer(artifacts: Part1Artifacts) -> Part2Artifacts:
-    print("=== PART 2: Transformer denoising ===")
+def run_denoise(artifacts: EncodeArtifacts) -> DenoiseArtifacts:
+    print("=== DENOISE: Transformer inference ===")
 
     pipe = MochiPipeline.from_pretrained(
         MODEL_ID,
@@ -95,4 +95,4 @@ def part2_run_transformer(artifacts: Part1Artifacts) -> Part2Artifacts:
         torch.cuda.empty_cache()
 
     print(f"    Finished denoising latents with shape: {tuple(denoised.shape)}")
-    return Part2Artifacts(denoised_latents=denoised)
+    return DenoiseArtifacts(settings=artifacts.settings, denoised_latents=denoised)

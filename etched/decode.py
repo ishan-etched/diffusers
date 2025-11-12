@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from pathlib import Path
 
 import torch
 from diffusers.models.autoencoders.autoencoder_kl_mochi import AutoencoderKLMochi
@@ -11,8 +12,7 @@ try:  # pragma: no cover - allow running as a script
         PIPELINE_DTYPE,
         PIPELINE_VARIANT,
         VAE_SPATIAL_SCALE_FACTOR,
-        Part1Artifacts,
-        Part2Artifacts,
+        DenoiseArtifacts,
         pick_device,
     )
 except ImportError:  # pragma: no cover
@@ -21,8 +21,7 @@ except ImportError:  # pragma: no cover
         PIPELINE_DTYPE,
         PIPELINE_VARIANT,
         VAE_SPATIAL_SCALE_FACTOR,
-        Part1Artifacts,
-        Part2Artifacts,
+        DenoiseArtifacts,
         pick_device,
     )
 
@@ -38,10 +37,10 @@ def _load_vae(device: torch.device) -> AutoencoderKLMochi:
     return vae.to(device)
 
 
-def part3_decode_and_render(inputs: Part1Artifacts, outputs: Part2Artifacts) -> None:
-    print("=== PART 3: VAE decoding & video export ===")
+def run_decode(artifacts: DenoiseArtifacts, output_path: Path) -> None:
+    print("=== DECODE: VAE decoding & video export ===")
     device = pick_device()
-    latents = outputs.denoised_latents.to(device=device, dtype=PIPELINE_DTYPE)
+    latents = artifacts.denoised_latents.to(device=device, dtype=PIPELINE_DTYPE)
 
     vae = _load_vae(device)
     video_processor = VideoProcessor(vae_scale_factor=VAE_SPATIAL_SCALE_FACTOR)
@@ -64,5 +63,7 @@ def part3_decode_and_render(inputs: Part1Artifacts, outputs: Part2Artifacts) -> 
         video = vae.decode(latents, return_dict=False)[0]
 
     frames = video_processor.postprocess_video(video, output_type="pil")[0]
-    export_to_video(frames, inputs.settings.output_path, fps=inputs.settings.fps)
-    print(f"    Exported video to {inputs.settings.output_path}")
+    output_path = Path(output_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    export_to_video(frames, str(output_path), fps=artifacts.settings.fps)
+    print(f"    Exported video to {output_path}")
