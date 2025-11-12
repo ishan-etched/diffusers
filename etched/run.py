@@ -102,12 +102,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="torch",
         help="Decoding backend to use (default: torch).",
     )
-    parser.add_argument(
-        "--vae-weights",
-        type=_as_path,
-        default=None,
-        help="Path to the numpy decoder weights archive (required for numpy backend).",
-    )
 
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("encode", help="Run only the encode stage.")
@@ -124,7 +118,7 @@ def main(argv: list[str] | None = None) -> None:
     command = args.command or "all"
 
     base_dir, encode_snapshot, denoise_snapshot, video_path = _resolve_paths(args.dir)
-    vae_weights = Path(args.vae_weights) if args.vae_weights is not None else base_dir / DEFAULT_VAE_WEIGHTS.name
+    vae_weights = base_dir / DEFAULT_VAE_WEIGHTS.name
 
     try:
         if command == "encode":
